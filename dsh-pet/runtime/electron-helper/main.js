@@ -22,7 +22,7 @@ try {
   );
   process.exit(3);
 }
-const { app, BrowserWindow, ipcMain, screen, shell, protocol, Tray, Menu, nativeImage, powerMonitor } = electronApi;
+const { app, BrowserWindow, ipcMain, screen, shell, protocol, Tray, Menu, nativeImage, powerMonitor, globalShortcut } = electronApi;
 const path = require('node:path');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头）
@@ -251,6 +251,44 @@ if (process.env.DSH_PET_IN_PROCESS === '1') {
   };
 }
 
+/**
+ * 全局快捷键：一键锁住/解锁整窗点击穿透。
+ *
+ * 全屏射击游戏里，准星扫过宠物身体的那一拍会把窗口翻成可交互，按下的一下点击就被宠物吞掉；
+ * 锁住之后窗口始终穿透（兜底泵整拍跳过，见 main/windows.js 的 togglePointerLock），
+ * 再按一次交回给按光标的自动判定。锁定态靠窗口半透明示人——锁住后它接不到鼠标、也收不到热键，
+ * 没有别的反馈通道。
+ *
+ * 组合键可能被别的程序先占（register 返回 false），那种情况只记一行日志，其余功能一概不受影响。
+ */
+const POINTER_LOCK_HOTKEY = 'Control+Alt+P';
+
+/** 注册穿透锁快捷键；只在 app ready 之后调（Electron 的硬性要求）。 */
+function registerPointerLockHotkey() {
+  let ok = false;
+  try {
+    ok = globalShortcut.register(POINTER_LOCK_HOTKEY, () => {
+      const locked = petWindows.togglePointerLock();
+      console.error(
+        '[dsh-pet-desktop-helper] pointer-lock ' +
+          (locked ? 'ON（穿透已锁死，再按一次恢复）' : 'OFF（交回按光标自动判定）'),
+      );
+    });
+  } catch (e) {
+    console.error(
+      '[dsh-pet-desktop-helper] 注册全局快捷键失败：',
+      String(e && e.message ? e.message : e),
+    );
+  }
+  if (!ok) {
+    console.error(
+      '[dsh-pet-desktop-helper] 快捷键 ' +
+        POINTER_LOCK_HOTKEY +
+        ' 没注册上（可能被其它程序占用）；穿透仍按光标自动判定，只是没有一键锁死',
+    );
+  }
+}
+
 app.whenReady().then(() => {
   // 探测子进程：此时没有 force-device-scale-factor，读到的是 Windows 的真实主屏缩放。
   // 退出推迟一拍——在 ready 回调里直接 app.exit() 会赶在 stdout 落盘前拆掉进程
@@ -292,6 +330,7 @@ app.whenReady().then(() => {
 
   linuxPointer?.start();
   petWindows.create();
+  registerPointerLockHotkey();
 
   // 合盖/唤醒是任务栏按钮重建最集中的时刻：resume / unlock-screen 后把每只宠物重新摘一次。
   // powerMonitor 只能在 ready 之后使用，所以挂在这里而不是模块顶层。
@@ -319,6 +358,12 @@ app.whenReady().then(() => {
 // 退出时销毁托盘图标：不销毁会在 Windows 通知区留下「幽灵图标」（鼠标划过才消失）。
 // 宿主改 display 时是 SIGTERM/SIGKILL 硬杀，Windows 上拦不到，所以这条只覆盖优雅退出。
 app.on('before-quit', () => {
+  // 全局快捷键不注销会一直挂在系统里，进程没了那个组合键还被一个已经不存在的注册占着
+  try {
+    globalShortcut.unregisterAll();
+  } catch (e) {
+    console.error('[dsh-pet-desktop-helper] unregisterAll failed:', String(e && e.message ? e.message : e));
+  }
   petWindows.stopTaskbarWatchdog();
   if (!tray.exists()) return;
   try {

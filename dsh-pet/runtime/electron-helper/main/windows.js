@@ -15,6 +15,14 @@ const { TASKBAR_WATCHDOG_TICK_MS, shouldRunTaskbarWatchdog } = require('../taskb
 const POINTER_POLL_MS = 60;
 
 /**
+ * 全局快捷键锁住穿透期间，窗口的不透明度。
+ *
+ * 锁住后整窗接不到鼠标事件，渲染端也收不到热键（窗口默认不聚焦），状态反馈只能由主进程从窗口
+ * 本身给：降透明度既让宠物不挡视线，又让用户一眼看出「现在是锁着的」。
+ */
+const POINTER_LOCK_OPACITY = 0.6;
+
+/**
  * 造窗口能力。
  *
  * @param deps.BrowserWindow - Electron BrowserWindow 构造器。
@@ -62,6 +70,8 @@ function createWindows({
   const petStates = new Map();
   /** 冒烟期间暂停兜底泵：它按真实光标翻转，会干扰冒烟对渲染端通道的断言 */
   let pointerFallbackPaused = false;
+  /** 用户经全局快捷键锁死穿透：true 期间兜底泵整拍跳过，所有窗口固定穿透（全屏射击游戏用） */
+  let pointerLocked = false;
 
   /** 碰撞站场最多每 16ms 广播一次，位置仍由 IPC 逐帧立即提交。 */
   let petStateTimer = null;
@@ -97,6 +107,45 @@ function createWindows({
   function setWindowIgnore(win, ignore) {
     win.setIgnoreMouseEvents(ignore, { forward: true });
     windowIgnore.set(win.id, ignore);
+  }
+
+  /**
+   * 按当前锁定状态给单个窗口上/下端透明度。这是锁定态唯一的反馈通道。
+   *
+   * 少数平台或合成器不支持逐窗透明度（或窗口已销毁），失败只丢视觉提示，穿透本身不受影响——
+   * 所以吞掉异常只记一行，不让它掀掉别的窗口。
+   *
+   * @param win - 目标窗口。
+   */
+  function applyLockOpacity(win) {
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.setOpacity(pointerLocked ? POINTER_LOCK_OPACITY : 1);
+    } catch (e) {
+      console.error(
+        '[dsh-pet-desktop-helper] setOpacity failed:',
+        String(e && e.message ? e.message : e),
+      );
+    }
+  }
+
+  /**
+   * 全局快捷键锁住/解锁整窗穿透。玩全屏射击游戏时，准星扫过宠物身体那一拍会把窗口翻成可交互，
+   * 按下的一下点击就被宠物吃掉；锁住后兜底泵整拍跳过，窗口始终穿透。
+   *
+   * 锁定瞬间把每个窗口显式置成穿透（按下时光标可能正好停在宠物身上）；解锁不主动翻转，交给下一拍
+   * 按真实光标判定，省掉「解锁瞬间光标在宠物身上 → 立刻又变可交互」的两拍抖动。
+   *
+   * @returns 锁定后的状态，true 表示已锁住穿透。
+   */
+  function togglePointerLock() {
+    pointerLocked = !pointerLocked;
+    for (const win of windows.values()) {
+      if (win.isDestroyed()) continue;
+      if (pointerLocked) setWindowIgnore(win, true);
+      applyLockOpacity(win);
+    }
+    return pointerLocked;
   }
 
   /** 桌面几何：逐屏工作区、外接矩形、主屏下标；边界判定必须走 areas 的并集而不是 hull。 */
@@ -160,10 +209,13 @@ function createWindows({
     taskbarWatchdogTimer = null;
   }
 
-  /** 穿透兜底泵：正规翻转链路只有 forward 鼠标钩子，它在 Windows 上可能静默失效。 */
+  /**
+   * 穿透兜底泵：正规翻转链路只有 forward 鼠标钩子，它在 Windows 上可能静默失效。
+   * 锁死穿透期间整拍跳过（见 {@link togglePointerLock}），否则每 60ms 就把窗口又翻回可交互。
+   */
   function startPointerFallback(win) {
     const pointerTimer = setInterval(() => {
-      if (pointerFallbackPaused || win.isDestroyed()) return;
+      if (pointerFallbackPaused || pointerLocked || win.isDestroyed()) return;
       const bounds = win.getBounds();
       if (bounds.width < 8 || bounds.height < 8) return; // 尺寸还没落定（首帧上报前）
       const ignoring = windowIgnore.get(win.id) !== false;
@@ -249,6 +301,8 @@ function createWindows({
     // 页面级缩放与渲染端 CONFIG.scale 同源；show:false 的窗口 zoomFactor 不生效，须加载后设置
     win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(scale));
     setWindowIgnore(win, true);
+    // 锁着穿透的时候重建窗口（改主屏缩放、换显示位置）要继承锁定态，否则新窗口一出来就是可按的
+    applyLockOpacity(win);
     win.on('show', () => keepOffTaskbar(win));
     win.once('ready-to-show', () => {
       keepOffTaskbar(win);
@@ -342,6 +396,7 @@ function createWindows({
     closeAll: closeAllPetWindows,
     geometry: deskGeometry,
     setWindowIgnore,
+    togglePointerLock,
     updatePetState,
     broadcastPetStates,
     keepOffTaskbar,
