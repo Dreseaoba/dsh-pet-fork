@@ -259,34 +259,41 @@ if (process.env.DSH_PET_IN_PROCESS === '1') {
  * 再按一次交回给按光标的自动判定。锁定态靠窗口半透明示人——锁住后它接不到鼠标、也收不到热键，
  * 没有别的反馈通道。
  *
- * 组合键可能被别的程序先占（register 返回 false），那种情况只记一行日志，其余功能一概不受影响。
+ * 候选表按「按起来顺手的优先级」排：Electron 的全局加速键是独占的，被别的程序先占就注册不上
+ * （2026-11-20 实测 Control+Alt+P 在本机被占），于是往下逐个试，注册上第一个为止。
+ * 全都没注册上只记日志，穿透仍按光标自动判定，其余功能一概不受影响。
  */
-const POINTER_LOCK_HOTKEY = 'Control+Alt+P';
+const POINTER_LOCK_HOTKEYS = ['Control+Alt+Shift+P', 'Control+Shift+F9', 'Control+Alt+F9'];
 
 /** 注册穿透锁快捷键；只在 app ready 之后调（Electron 的硬性要求）。 */
 function registerPointerLockHotkey() {
-  let ok = false;
-  try {
-    ok = globalShortcut.register(POINTER_LOCK_HOTKEY, () => {
-      const locked = petWindows.togglePointerLock();
+  for (const accel of POINTER_LOCK_HOTKEYS) {
+    let ok = false;
+    try {
+      ok = globalShortcut.register(accel, () => {
+        const locked = petWindows.togglePointerLock();
+        console.error(
+          '[dsh-pet-desktop-helper] pointer-lock ' +
+            (locked ? 'ON（穿透已锁死，再按一次恢复）' : 'OFF（交回按光标自动判定）'),
+        );
+      });
+    } catch (e) {
       console.error(
-        '[dsh-pet-desktop-helper] pointer-lock ' +
-          (locked ? 'ON（穿透已锁死，再按一次恢复）' : 'OFF（交回按光标自动判定）'),
+        '[dsh-pet-desktop-helper] 注册全局快捷键 ' + accel + ' 抛错：',
+        String(e && e.message ? e.message : e),
       );
-    });
-  } catch (e) {
-    console.error(
-      '[dsh-pet-desktop-helper] 注册全局快捷键失败：',
-      String(e && e.message ? e.message : e),
-    );
+    }
+    if (ok) {
+      console.error('[dsh-pet-desktop-helper] 穿透锁快捷键已就绪：' + accel);
+      return;
+    }
+    console.error('[dsh-pet-desktop-helper] ' + accel + ' 被占用，试下一个');
   }
-  if (!ok) {
-    console.error(
-      '[dsh-pet-desktop-helper] 快捷键 ' +
-        POINTER_LOCK_HOTKEY +
-        ' 没注册上（可能被其它程序占用）；穿透仍按光标自动判定，只是没有一键锁死',
-    );
-  }
+  console.error(
+    '[dsh-pet-desktop-helper] 候选组合键 ' +
+      POINTER_LOCK_HOTKEYS.join(' / ') +
+      ' 全部被占用；穿透仍按光标自动判定，只是没有一键锁死',
+  );
 }
 
 app.whenReady().then(() => {
