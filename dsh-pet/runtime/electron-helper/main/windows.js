@@ -404,6 +404,7 @@ function createWindows({
     geometry: deskGeometry,
     setWindowIgnore,
     togglePointerLock,
+    isPointerLocked: () => pointerLocked,
     updatePetState,
     broadcastPetStates,
     keepOffTaskbar,

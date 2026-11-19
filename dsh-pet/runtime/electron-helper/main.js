@@ -223,6 +223,16 @@ const petWindows = createWindows({
   topmostLevel,
   taskbarWatchdogEnabled: taskbarWatchdogEnabledFromEnv(process.env.DSH_PET_TASKBAR_WATCHDOG),
 });
+/**
+ * 穿透锁对外的三个口子：托盘菜单靠它显示「当前生效的组合键」并支持点击切换。
+ * 唯一真相仍是 windows.js 里的 pointerLocked，这里只是只读代理与转发。
+ */
+const pointerLock = {
+  hotkey: () => activePointerLockHotkey,
+  isLocked: () => petWindows.isPointerLocked(),
+  toggle: () => petWindows.togglePointerLock(),
+};
+
 /** 托盘：显示开关与退出入口。 */
 const tray = createTray({
   app,
@@ -236,6 +246,7 @@ const tray = createTray({
   petRoute: PET_ROUTE,
   platform: TRAY_PLATFORM,
   helperDir: __dirname,
+  pointerLock,
 });
 
 /**
@@ -265,6 +276,12 @@ if (process.env.DSH_PET_IN_PROCESS === '1') {
  */
 const POINTER_LOCK_HOTKEYS = ['Control+Alt+Shift+P', 'Control+Shift+F9', 'Control+Alt+F9'];
 
+/**
+ * 实际注册上的组合键；null 表示候选表全被占、一键锁死不可用。
+ * 托盘菜单靠它显示「现在按哪个键」，也是候选表降级后唯一能查到的地方。
+ */
+let activePointerLockHotkey = null;
+
 /** 注册穿透锁快捷键；只在 app ready 之后调（Electron 的硬性要求）。 */
 function registerPointerLockHotkey() {
   for (const accel of POINTER_LOCK_HOTKEYS) {
@@ -284,7 +301,10 @@ function registerPointerLockHotkey() {
       );
     }
     if (ok) {
+      activePointerLockHotkey = accel;
       console.error('[dsh-pet-desktop-helper] 穿透锁快捷键已就绪：' + accel);
+      // 托盘可能已经建好了（start 早于这里），重建一次菜单才能显示刚定下来的组合键
+      void tray.refresh();
       return;
     }
     console.error('[dsh-pet-desktop-helper] ' + accel + ' 被占用，试下一个');

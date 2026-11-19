@@ -36,6 +36,7 @@ function createTray({
   petRoute,
   platform,
   helperDir,
+  pointerLock,
 }) {
   const isDesktopDisplay = (display) => display === 'desktop' || display === 'both';
 
@@ -84,6 +85,40 @@ function createTray({
   }
 
   /**
+   * 穿透锁那几项：把「当前实际生效的组合键」摆出来，并给一条说明。
+   *
+   * 组合键是候选表逐个试出来的（全局加速键先到先得，被别的程序占了就降级到下一个），
+   * 降级之后用户按老键没反应、却不知道换成了哪个——这里就是那个唯一的出口。
+   *
+   * @returns 菜单模板片段；没拿到 pointerLock 能力时返回空数组（不显示，也不报错）。
+   */
+  function pointerLockMenuItems() {
+    if (!pointerLock || typeof pointerLock.hotkey !== 'function') return [];
+    const hotkey = pointerLock.hotkey();
+    if (!hotkey) {
+      return [
+        { type: 'separator' },
+        { label: '穿透锁：候选组合键全被占用', enabled: false },
+      ];
+    }
+    const locked = pointerLock.isLocked();
+    return [
+      { type: 'separator' },
+      {
+        label: '穿透锁 ' + hotkey + '（' + (locked ? '已锁死' : '跟随光标') + '）',
+        type: 'checkbox',
+        checked: locked,
+        click: () => {
+          pointerLock.toggle();
+          // 勾选状态要跟着翻转，重建一次菜单才会显示
+          void refreshTray();
+        },
+      },
+      { label: '玩全屏游戏前锁住，准星扫过不会吞点击', enabled: false },
+    ];
+  }
+
+  /**
    * 按当前配置拼托盘菜单；返回 null 表示此时不该有托盘（开关关掉 / 配置里没有宠物）。
    *
    * 独立成函数是为了应用模式的重建：那边改 display 只重建窗口、不重启进程，
@@ -124,6 +159,7 @@ function createTray({
         checked: isDesktopDisplay(pet.display),
         click: () => traySetPetDisplay(pet.id, toggleDisplay(pet.display)),
       })),
+      ...pointerLockMenuItems(),
       ...(canQuit ? [{ type: 'separator' }, { label: '退出', click: quitApp }] : []),
     ]);
   }
