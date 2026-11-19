@@ -103,10 +103,17 @@ function createWindows({
     petStateTimer.unref?.();
   }
 
-  /** 翻转整窗穿透的唯一出口：状态与镜像永远一起更新（穿透期间保留 forward）。 */
+  /**
+   * 翻转整窗穿透的唯一出口：状态与镜像永远一起更新（穿透期间保留 forward）。
+   *
+   * 锁死穿透期间这里同时也是一道闸。只拦兜底泵不够——`forward: true` 会把 mousemove 继续转发给
+   * 渲染端，渲染端据此判定「光标在我身上」再经 IPC 请求翻转（菜单、对话弹窗、拖拽都走这条）；
+   * 锁定态下无论谁请求都强制穿透，镜像同样记 true，免得解锁后镜像与真实状态对不上。
+   */
   function setWindowIgnore(win, ignore) {
-    win.setIgnoreMouseEvents(ignore, { forward: true });
-    windowIgnore.set(win.id, ignore);
+    const effective = pointerLocked ? true : ignore;
+    win.setIgnoreMouseEvents(effective, { forward: true });
+    windowIgnore.set(win.id, effective);
   }
 
   /**
